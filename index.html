@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>phyphox Terminal</title>
+<style>
+:root{
+  --bg:#10141a; --panel:#171d26; --line:#2a3340; --text:#d9e0ea; --dim:#7f8b9b;
+  --accent:#ff7e22; --ok:#6fcf97; --err:#ff6b6b; --mono:ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:var(--sans)}
+.app{display:grid;grid-template-columns:3fr 1fr;height:100%;gap:0}
+@media (max-width:760px){.app{grid-template-columns:1fr;grid-template-rows:3fr 2fr}}
+
+/* Terminal */
+.term{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--line)}
+.bar{display:flex;align-items:center;gap:.75rem;padding:.55rem 1rem;background:var(--panel);border-bottom:1px solid var(--line);font-size:.85rem;color:var(--dim)}
+.bar b{color:var(--text);font-weight:600}
+.bar .status{margin-left:auto}
+.bar .status.busy{color:var(--accent)}
+#out{flex:1;overflow:auto;padding:1rem;font:14px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
+#out .err{color:var(--err)} #out .dim{color:var(--dim)} #out .ok{color:var(--ok)} #out .cmd{color:var(--text)}
+#out .prompt,.prompt{color:var(--accent)}
+.inputrow{display:flex;gap:.6rem;align-items:center;padding:.75rem 1rem;border-top:1px solid var(--line);font:14px var(--mono)}
+.inputrow input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--text);font:inherit}
+.inputrow:focus-within{box-shadow:inset 0 2px 0 var(--accent)}
+.inputrow.disabled{opacity:.5;pointer-events:none}
+
+/* Sperre vor der ersten Python-Datei */
+.lock{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;text-align:center;padding:2rem;background:rgba(16,20,26,.94);z-index:5}
+.lock.hidden{display:none}
+.lock h1{margin:0;font-size:1.5rem;font-weight:600}
+.lock p{margin:0;color:var(--dim);max-width:34ch;line-height:1.5}
+.dropbox{width:min(440px,100%);padding:2.2rem 1rem;border:2px dashed var(--line);border-radius:10px;color:var(--dim);transition:.15s}
+.dropbox strong{display:block;color:var(--text);font-size:1.05rem;margin-bottom:.3rem}
+body.dragging .dropbox,.dropbox:hover{border-color:var(--accent);color:var(--text)}
+button{font:inherit;cursor:pointer}
+.btn{background:var(--accent);color:#1a0d00;border:0;border-radius:6px;padding:.5rem 1rem;font-weight:600}
+.btn:focus-visible,.icon:focus-visible,.dl:focus-visible{outline:2px solid #fff;outline-offset:2px}
+
+/* Seitenleiste */
+.side{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto;background:var(--panel)}
+.side h2{margin:0;padding:.9rem 1rem .4rem;font-size:.9rem;font-weight:600;color:var(--dim);display:flex;justify-content:space-between}
+.list{list-style:none;margin:0;padding:0 .6rem}
+.list li{display:flex;align-items:center;gap:.5rem;padding:.45rem .5rem;border-radius:6px;font-size:.85rem}
+.list li:hover{background:rgba(255,255,255,.04)}
+.list .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list .size{color:var(--dim);font-size:.75rem;white-space:nowrap}
+.icon,.dl{background:none;border:0;color:var(--dim);padding:.1rem .35rem;border-radius:4px;text-decoration:none;font-size:.85rem}
+.icon:hover{color:var(--err)} .dl:hover{color:var(--ok)}
+.empty{padding:.3rem 1.1rem;color:var(--dim);font-size:.82rem}
+.adddrop{margin:.6rem 1rem;padding:1rem;border:2px dashed var(--line);border-radius:8px;text-align:center;font-size:.82rem;color:var(--dim);cursor:pointer;transition:.15s}
+body.dragging .adddrop,.adddrop:hover{border-color:var(--accent);color:var(--text)}
+.script-card{margin:0 1rem;padding:.55rem .7rem;border:1px solid var(--line);border-radius:6px;font:13px var(--mono);display:flex;gap:.5rem;align-items:center;color:var(--accent)}
+.script-card span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.script-card button{font-family:var(--sans)}
+#flash{position:fixed;left:50%;bottom:1.2rem;transform:translateX(-50%);background:var(--err);color:#200;padding:.5rem 1rem;border-radius:6px;font-size:.9rem;opacity:0;pointer-events:none;transition:opacity .2s;z-index:10}
+#flash.show{opacity:1}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <main class="term" id="term">
+    <div class="bar"><b>phyphox Terminal</b><span>Python 3 im Browser (Pyodide)</span><span class="status" id="status">Starte Python …</span></div>
+    <div id="out" aria-live="polite"></div>
+    <div class="inputrow disabled" id="inputrow">
+      <span class="prompt" id="prompt">$</span>
+      <input id="cmd" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Befehl eingeben">
+    </div>
+    <div class="lock" id="lock">
+      <h1>Python-Datei einfügen</h1>
+      <p>Erst wenn du dein Skript hinzugefügt hast, kannst du im Terminal etwas ausführen.</p>
+      <div class="dropbox" id="lockdrop" tabindex="0" role="button">
+        <strong>.py-Datei hierher ziehen</strong>
+        oder klicken zum Auswählen
+      </div>
+    </div>
+  </main>
+
+  <aside class="side">
+    <h2>Skript</h2>
+    <div id="scriptbox"><div class="empty">Noch keine Datei</div></div>
+    <h2>Dateien <span id="count">0</span></h2>
+    <ul class="list" id="files"></ul>
+    <div class="empty" id="filesEmpty">Noch keine Dateien</div>
+    <div class="adddrop" id="adddrop" tabindex="0" role="button">ZIP-Dateien hierher ziehen<br>oder klicken</div>
+    <h2>Ergebnisse</h2>
+    <ul class="list" id="results"></ul>
+    <div class="empty" id="resultsEmpty">Erzeugte Dateien erscheinen hier</div>
+  </aside>
+</div>
+<div id="flash" role="alert"></div>
+<input type="file" id="pick" multiple hidden>
+
+<script type="text/js-worker" id="worker">
+importScripts('https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js');
+let py;
+const DIR = '/home/pyodide/work';
+const ready = (async () => {
+  py = await loadPyodide({
+    stdout: t => postMessage({type:'out', text:t}),
+    stderr: t => postMessage({type:'out', text:t, err:true})
+  });
+  postMessage({type:'ready'});
+})();
+const WRAP = `
+import sys, os, json, runpy, traceback
+os.environ['MPLBACKEND'] = 'Agg'
+sys.argv = json.loads(_argv)
+if os.getcwd() not in sys.path: sys.path.insert(0, os.getcwd())
+_rc = 0
+try:
+    runpy.run_path(sys.argv[0], run_name='__main__')
+except SystemExit as e:
+    if e.code is None: _rc = 0
+    elif isinstance(e.code, int): _rc = e.code
+    else:
+        print(e.code, file=sys.stderr); _rc = 1
+except BaseException:
+    traceback.print_exc(); _rc = 1
+_rc
+`;
+onmessage = async e => {
+  const m = e.data;
+  if (m.type !== 'run') return;
+  await ready;
+  try {
+    py.runPython(`import shutil, os\nshutil.rmtree('${DIR}', ignore_errors=True)\nos.makedirs('${DIR}')\nos.chdir('${DIR}')`);
+    const inputs = new Set();
+    for (const f of m.files) { py.FS.writeFile(DIR + '/' + f.name, new Uint8Array(f.buf)); inputs.add(f.name); }
+    py.FS.writeFile(DIR + '/' + m.script.name, new Uint8Array(m.script.buf)); inputs.add(m.script.name);
+    postMessage({type:'status', text:'Lade Pakete …'});
+    const code = new TextDecoder().decode(m.script.buf);
+    await py.loadPackagesFromImports(code, {messageCallback:()=>{}, errorCallback:t=>postMessage({type:'out', text:t, err:true})});
+    postMessage({type:'status', text:'Läuft …'});
+    py.globals.set('_argv', JSON.stringify(m.argv));
+    const rc = await py.runPythonAsync(WRAP);
+    const outputs = [];
+    for (const n of py.FS.readdir(DIR)) {
+      if (n === '.' || n === '..' || inputs.has(n)) continue;
+      const p = DIR + '/' + n;
+      if (!py.FS.isFile(py.FS.stat(p).mode)) continue;
+      outputs.push({name:n, buf:py.FS.readFile(p).buffer});
+    }
+    postMessage({type:'done', rc, outputs}, outputs.map(o => o.buf));
+  } catch (err) {
+    postMessage({type:'out', text:String(err.message || err), err:true});
+    postMessage({type:'done', rc:1, outputs:[]});
+  }
+};
+</script>
+
+<script>
+const $ = id => document.getElementById(id);
+const out = $('out'), cmd = $('cmd'), inputrow = $('inputrow');
+const state = { script:null, files:new Map(), results:new Map(), busy:false, ready:false, history:[], hi:0 };
+
+/* ---------- Worker ---------- */
+const worker = new Worker(URL.createObjectURL(new Blob([$('worker').textContent], {type:'text/javascript'})));
+worker.onmessage = e => {
+  const m = e.data;
+  if (m.type === 'ready') { state.ready = true; setStatus('Bereit'); line('Python ist bereit.', 'dim'); updateInput(); }
+  else if (m.type === 'out') line(m.text, m.err ? 'err' : '');
+  else if (m.type === 'status') setStatus(m.text, true);
+  else if (m.type === 'done') finish(m);
+};
+worker.onerror = () => { setStatus('Fehler'); line('Python konnte nicht geladen werden. Prüfe deine Internetverbindung.', 'err'); };
+
+/* ---------- Hilfsfunktionen ---------- */
+function line(text, cls) {
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  d.textContent = text;
+  out.appendChild(d); out.scrollTop = out.scrollHeight;
+}
+function setStatus(t, busy) { const s = $('status'); s.textContent = t; s.classList.toggle('busy', !!busy); }
+function flash(t) { const f = $('flash'); f.textContent = t; f.classList.add('show'); clearTimeout(flash.t); flash.t = setTimeout(() => f.classList.remove('show'), 2600); }
+function fmt(n) { return n < 1024 ? n + ' B' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : (n/1048576).toFixed(1) + ' MB'; }
+function defaultCmd() { return state.script ? `python3 ${state.script.name} *.zip` : ''; }
+function updateInput() {
+  const on = state.script && state.ready && !state.busy;
+  inputrow.classList.toggle('disabled', !on);
+  if (on) cmd.focus();
+}
+
+/* ---------- Dateien hinzufügen ---------- */
+async function addFiles(list) {
+  for (const f of list) {
+    const buf = await f.arrayBuffer();
+    if (/\.py$/i.test(f.name)) {
+      const oldDefault = defaultCmd();
+      state.script = { name:f.name, buf };
+      $('lock').classList.add('hidden');
+      renderScript();
+      if (!cmd.value || cmd.value === oldDefault) cmd.value = defaultCmd();
+      line(`Skript geladen: ${f.name}`, 'ok');
+    } else if (!state.script) {
+      flash('Zuerst eine .py-Datei einfügen.');
+    } else {
+      state.files.set(f.name, { buf, size:buf.byteLength });
+    }
+  }
+  renderFiles(); updateInput();
+}
+function renderScript() {
+  const b = $('scriptbox'); b.innerHTML = '';
+  const c = document.createElement('div'); c.className = 'script-card';
+  c.innerHTML = '<span></span><button class="icon" title="Durch andere .py-Datei ersetzen: einfach neue Datei hineinziehen">ⓘ</button>';
+  c.firstChild.textContent = state.script.name;
+  b.appendChild(c);
+}
+function renderFiles() {
+  const ul = $('files'); ul.innerHTML = '';
+  for (const [name, f] of state.files) {
+    const li = document.createElement('li');
+    li.innerHTML = '<span class="name"></span><span class="size"></span><button class="icon" aria-label="Entfernen">✕</button>';
+    li.querySelector('.name').textContent = name; li.querySelector('.name').title = name;
+    li.querySelector('.size').textContent = fmt(f.size);
+    li.querySelector('button').onclick = () => { state.files.delete(name); renderFiles(); };
+    ul.appendChild(li);
+  }
+  $('count').textContent = state.files.size;
+  $('filesEmpty').style.display = state.files.size ? 'none' : '';
+}
+function renderResults() {
+  const ul = $('results'); ul.innerHTML = '';
+  for (const [name, f] of state.results) {
+    const li = document.createElement('li');
+    li.innerHTML = '<span class="name"></span><span class="size"></span><a class="dl" aria-label="Herunterladen">⬇</a>';
+    li.querySelector('.name').textContent = name;
+    li.querySelector('.size').textContent = fmt(f.size);
+    const a = li.querySelector('a'); a.href = f.url; a.download = name;
+    ul.appendChild(li);
+  }
+  $('resultsEmpty').style.display = state.results.size ? 'none' : '';
+}
+
+/* ---------- Drag and Drop ---------- */
+let depth = 0;
+addEventListener('dragenter', e => { e.preventDefault(); depth++; document.body.classList.add('dragging'); });
+addEventListener('dragleave', e => { e.preventDefault(); if (--depth <= 0) { depth = 0; document.body.classList.remove('dragging'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => { e.preventDefault(); depth = 0; document.body.classList.remove('dragging'); addFiles([...e.dataTransfer.files]); });
+function bindPick(el) {
+  const open = () => $('pick').click();
+  el.onclick = open; el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
+}
+bindPick($('lockdrop')); bindPick($('adddrop'));
+$('pick').onchange = e => { addFiles([...e.target.files]); e.target.value = ''; };
+
+/* ---------- Befehle ---------- */
+function tokenize(s) {
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g, t = []; let m;
+  while ((m = re.exec(s))) t.push(m[1] ?? m[2] ?? m[3]);
+  return t;
+}
+function expand(tok) {
+  if (!/[*?]/.test(tok)) return [tok];
+  const re = new RegExp('^' + tok.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i');
+  const names = [...state.files.keys(), state.script.name].filter(n => re.test(n));
+  return names.length ? names.sort() : [tok];
+}
+function execute(raw) {
+  const cmdline = raw.trim();
+  const p = document.createElement('div'); p.className = 'cmd';
+  p.innerHTML = '<span class="prompt">$ </span>'; p.append(cmdline); out.appendChild(p);
+  if (!cmdline) return;
+  state.history.push(cmdline); state.hi = state.history.length;
+  const [c, ...rest] = tokenize(cmdline);
+  const args = rest.flatMap(expand);
+  if (c === 'clear') { out.innerHTML = ''; return; }
+  if (c === 'help') { line('Befehle:\n  python3 <skript.py> [dateien …]   Skript ausführen (* als Platzhalter)\n  ls                                 hochgeladene Dateien anzeigen\n  clear                              Terminal leeren', 'dim'); return; }
+  if (c === 'ls') { line([state.script.name, ...state.files.keys()].join('\n')); return; }
+  if (c !== 'python' && c !== 'python3') { line(`${c}: Befehl nicht gefunden (tippe "help")`, 'err'); return; }
+  const target = args[0];
+  if (!target) { line('Python 3 (Pyodide). Gib ein Skript an, z. B. ' + defaultCmd(), 'dim'); return; }
+  if (target !== state.script.name) { line(`python3: can't open file '${target}': [Errno 2] No such file or directory`, 'err'); return; }
+  const missing = args.slice(1).filter(a => !a.startsWith('-') && !state.files.has(a) && a !== target && /\.\w+$/.test(a));
+  if (missing.length) line('Hinweis: nicht hochgeladen: ' + missing.join(', '), 'dim');
+  run(args);
+}
+function run(argv) {
+  state.busy = true; updateInput(); setStatus('Läuft …', true);
+  for (const f of state.results.values()) URL.revokeObjectURL(f.url);
+  state.results.clear(); renderResults();
+  worker.postMessage({
+    type:'run', argv,
+    script:{ name:state.script.name, buf:state.script.buf.slice(0) },
+    files:[...state.files].map(([name, f]) => ({ name, buf:f.buf.slice(0) }))
+  });
+}
+function finish(m) {
+  state.busy = false; setStatus('Bereit');
+  for (const o of m.outputs) {
+    const url = URL.createObjectURL(new Blob([o.buf]));
+    state.results.set(o.name, { url, size:o.buf.byteLength });
+  }
+  renderResults();
+  if (m.outputs.length) line('Erzeugte Dateien (rechts zum Herunterladen): ' + m.outputs.map(o => o.name).join(', '), 'ok');
+  line(`[Beendet mit Code ${m.rc}]`, 'dim');
+  cmd.value = defaultCmd(); updateInput();
+}
+
+cmd.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const v = cmd.value; cmd.value = ''; execute(v); if (!state.busy) cmd.value = defaultCmd(); }
+  else if (e.key === 'ArrowUp' && state.history.length) { e.preventDefault(); state.hi = Math.max(0, state.hi - 1); cmd.value = state.history[state.hi]; }
+  else if (e.key === 'ArrowDown' && state.history.length) { e.preventDefault(); state.hi = Math.min(state.history.length, state.hi + 1); cmd.value = state.history[state.hi] ?? defaultCmd(); }
+  else if (e.key === 'l' && e.ctrlKey) { e.preventDefault(); out.innerHTML = ''; }
+});
+$('term').addEventListener('click', () => { if (!getSelection().toString()) cmd.focus(); });
+line('Willkommen beim phyphox Terminal. Füge links eine .py-Datei ein, um zu starten.', 'dim');
+</script>
+</body>
+</html>
